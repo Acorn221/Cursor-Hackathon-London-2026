@@ -28,6 +28,15 @@ it.
 | `scripts/pick_runnable_installer.py` | picks the single runnable installer per extension out of the hunt tree |
 | `skill/SKILL.md` | Claude Code skill wrapper (`/native-host-hunt`) |
 
+**Stage 2 — find the bug in the binary you just acquired:**
+
+| | |
+|---|---|
+| `scripts/ghidra_decompile.py` | routes by format, runs Ghidra headless, exports the surface |
+| `scripts/ghidra_scripts/ExportNativeHostSurface.java` | the headless post-script: decompiled C, sink call graph, strings |
+| `prompts/ghidra_rce_hunt.md` | the reverser agent's instructions |
+| `workflows/ghidra-rce-hunt.js` | route → decompile → hunt → **refute** → roundup |
+
 ## The funnel
 
 ```
@@ -97,6 +106,48 @@ Each of these came from a hunt going wrong first.
   will send a hunter after a binary that was never built; a scary `FIXME` may
   sit above a check the vendor later implemented properly. Verify against the
   shipped build.
+
+## Stage 2: hunting the chain
+
+Stage 1 ends with a binary on disk. Stage 2 asks whether a **web page** can
+reach code execution through it — the shape being:
+
+```
+CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:H/I:H/A:H   = 9.6
+page  ->  content script  ->  background  ->  native host  ->  OS
+```
+
+`S:C` is the load-bearing metric. The browser sandbox is the vulnerable
+component and the OS is the impacted one; that scope change is what separates
+this from an ordinary extension bug. A finding that stops inside the browser is
+not this class, and the prompt says so explicitly rather than leaving room to
+stretch the vector afterwards.
+
+```bash
+export GHIDRA_INSTALL_DIR=/opt/ghidra
+
+python3 scripts/ghidra_decompile.py route   <BINARY>          # which tool?
+python3 scripts/ghidra_decompile.py analyze <BINARY> --out X  # unmanaged only
+python3 scripts/ghidra_decompile.py sinks   X                 # what to read first
+```
+
+`route` refuses to send managed binaries to Ghidra. A .NET host decompiles to
+near-source in ILSpy and a jar in CFR; Ghidra would only show you the CLR stub
+and waste an hour. In practice a large share of native hosts turn out to be
+.NET, Java or Node — the ones that *are* unmanaged C++ are the minority that
+actually needs a disassembler.
+
+The headless export gives the agent three things: decompiled C for every
+function within six calls of an OS sink, a sink call graph ranked by distance,
+and the string table with cross-references. It reads C, not disassembly.
+
+**The workflow makes claims argue for their life.** Every `rce` verdict goes to
+three independent refuters — one on reachability, one on whether the sink is
+real, one on the consent gate — each told to default to *refuted* when unsure.
+Two refutations downgrade the verdict rather than deleting it, because the
+chain is often still a genuine lower-impact finding. The roundup keeps a
+"Downgraded" section on purpose: which lens killed which claim is the part
+worth reading for calibration.
 
 ## Scope
 
